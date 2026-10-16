@@ -92,6 +92,7 @@ function migrateRecord(params: {
   canWriteGroupAllowFrom: boolean;
   channelName: string;
   changes: string[];
+  defaultGroupPolicy?: unknown;
   parent?: ChannelRecord;
   parentHadGroupAllowFrom?: boolean;
   prefix: string;
@@ -99,7 +100,13 @@ function migrateRecord(params: {
   if (!params.canWriteGroupAllowFrom) {
     return;
   }
-  if (normalizeAllowFrom(params.account.groupAllowFrom).length > 0) {
+  // An explicit empty list is authored policy, not a missing legacy value.
+  if (Array.isArray(params.account.groupAllowFrom)) {
+    return;
+  }
+  const groupPolicy =
+    params.account.groupPolicy ?? params.parent?.groupPolicy ?? params.defaultGroupPolicy;
+  if (groupPolicy === "disabled") {
     return;
   }
   if (params.parent && params.parentHadGroupAllowFrom) {
@@ -153,13 +160,14 @@ export function maybeRepairGroupAllowFromFallback(cfg: OpenClawConfig): {
       continue;
     }
 
-    const hadGroupAllowFrom = normalizeAllowFrom(channelConfig.groupAllowFrom).length > 0;
+    const hadGroupAllowFrom = Array.isArray(channelConfig.groupAllowFrom);
     const canWriteChannelGroupAllowFrom = generatedSchemaAllowsGroupAllowFrom(
       channelName,
       CHANNEL_GROUP_ALLOW_FROM_PATH,
     );
     migrateRecord({
       account: channelConfig,
+      defaultGroupPolicy: nextChannels.defaults?.groupPolicy,
       canWriteGroupAllowFrom: canWriteChannelGroupAllowFrom,
       channelName,
       changes,
@@ -181,6 +189,7 @@ export function maybeRepairGroupAllowFromFallback(cfg: OpenClawConfig): {
       }
       migrateRecord({
         account,
+        defaultGroupPolicy: nextChannels.defaults?.groupPolicy,
         canWriteGroupAllowFrom: canWriteAccountGroupAllowFrom,
         channelName,
         changes,

@@ -1,5 +1,6 @@
 // Allow-from fallback migration tests cover doctor repair of legacy sender allowlists.
 import { describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { maybeRepairGroupAllowFromFallback } from "./allowfrom-fallback-migration.js";
 
 vi.mock("../channel-capabilities.js", () => ({
@@ -12,6 +13,73 @@ vi.mock("../channel-capabilities.js", () => ({
 }));
 
 describe("doctor group allowFrom fallback migration", () => {
+  it.each(["disabled", "allowlist", "open"] as const)(
+    "preserves explicit empty channel and account lists under %s policy",
+    (groupPolicy) => {
+      const cfg: OpenClawConfig = {
+        channels: {
+          imessage: { groupPolicy, groupAllowFrom: [], allowFrom: ["dm-user"] },
+          signal: {
+            accounts: {
+              work: { groupPolicy, groupAllowFrom: [], allowFrom: ["work-user"] },
+            },
+          },
+        },
+      };
+
+      expect(maybeRepairGroupAllowFromFallback(cfg)).toEqual({ config: cfg, changes: [] });
+    },
+  );
+
+  it.each(["account", "channel", "defaults"] as const)(
+    "leaves absent group lists alone when %s policy disables groups",
+    (scope) => {
+      const cfg: OpenClawConfig = {
+        channels: {
+          ...(scope === "defaults" ? { defaults: { groupPolicy: "disabled" } } : {}),
+          imessage: {
+            ...(scope === "channel" ? { groupPolicy: "disabled" } : {}),
+            accounts: {
+              work: {
+                ...(scope === "account" ? { groupPolicy: "disabled" } : {}),
+                allowFrom: ["work-user"],
+              },
+            },
+          },
+        },
+      };
+
+      expect(maybeRepairGroupAllowFromFallback(cfg)).toEqual({ config: cfg, changes: [] });
+    },
+  );
+
+  it("honors explicit policy overrides and stays idempotent without mutating the input", () => {
+    const cfg: OpenClawConfig = {
+      channels: {
+        defaults: { groupPolicy: "disabled" },
+        imessage: { groupPolicy: "allowlist", allowFrom: ["dm-user"] },
+        signal: {
+          groupPolicy: "disabled",
+          allowFrom: ["parent-user"],
+          accounts: {
+            work: { groupPolicy: "allowlist", allowFrom: ["work-user"] },
+          },
+        },
+      },
+    };
+    const before = structuredClone(cfg);
+    const result = maybeRepairGroupAllowFromFallback(cfg);
+
+    expect(result.config.channels?.imessage?.groupAllowFrom).toEqual(["dm-user"]);
+    expect(result.config.channels?.signal?.groupAllowFrom).toBeUndefined();
+    expect(result.config.channels?.signal?.accounts?.work?.groupAllowFrom).toEqual(["work-user"]);
+    expect(maybeRepairGroupAllowFromFallback(result.config)).toEqual({
+      config: result.config,
+      changes: [],
+    });
+    expect(cfg).toEqual(before);
+  });
+
   it("copies fallback allowFrom into explicit groupAllowFrom", () => {
     const result = maybeRepairGroupAllowFromFallback({
       channels: {
@@ -52,34 +120,37 @@ describe("doctor group allowFrom fallback migration", () => {
     ]);
   });
 
-  it("does not shadow an inherited channel group allowlist for accounts", () => {
-    const result = maybeRepairGroupAllowFromFallback({
-      channels: {
-        telegram: {
-          allowFrom: ["dm-user"],
-          groupAllowFrom: ["group-user"],
-          accounts: {
-            work: { allowFrom: ["work-dm-user"] },
-          },
-        },
-      },
-    });
-
-    expect(result).toEqual({
-      config: {
+  it.each([{ groupAllowFrom: [] }, { groupAllowFrom: ["group-user"] }])(
+    "does not shadow an inherited channel group allowlist $groupAllowFrom for accounts",
+    ({ groupAllowFrom }) => {
+      const result = maybeRepairGroupAllowFromFallback({
         channels: {
           telegram: {
             allowFrom: ["dm-user"],
-            groupAllowFrom: ["group-user"],
+            groupAllowFrom,
             accounts: {
               work: { allowFrom: ["work-dm-user"] },
             },
           },
         },
-      },
-      changes: [],
-    });
-  });
+      });
+
+      expect(result).toEqual({
+        config: {
+          channels: {
+            telegram: {
+              allowFrom: ["dm-user"],
+              groupAllowFrom,
+              accounts: {
+                work: { allowFrom: ["work-dm-user"] },
+              },
+            },
+          },
+        },
+        changes: [],
+      });
+    },
+  );
 
   it("skips disabled channels, disabled accounts, and channels without fallback", () => {
     const cfg = {
